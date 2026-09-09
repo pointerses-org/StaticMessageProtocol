@@ -19,7 +19,6 @@ on:
         type: string
 
 env:
-  RUST_MIN_VER: "1.70"
   GO_MIN_VER: "1.21"
 
 jobs:
@@ -35,20 +34,16 @@ jobs:
             arch: x86_64
             goos: windows
             goarch: amd64
-            rust-target: x86_64-pc-windows-gnu
+            rust-target: x86_64-pc-windows-msvc
             ext: ".exe"
-          - os: windows-latest
-            arch: x86
-            goos: windows
-            goarch: 386
-            rust-target: i686-pc-windows-gnu
-            ext: ".exe"
+            cc: clang
           - os: windows-latest
             arch: arm64
             goos: windows
             goarch: arm64
             rust-target: aarch64-pc-windows-msvc
             ext: ".exe"
+            cc: clang
 
           # macOS
           - os: macos-latest
@@ -57,12 +52,14 @@ jobs:
             goarch: amd64
             rust-target: x86_64-apple-darwin
             ext: ""
+            cc: clang
           - os: macos-latest
             arch: arm64
             goos: darwin
             goarch: arm64
             rust-target: aarch64-apple-darwin
             ext: ""
+            cc: clang
 
           # Linux
           - os: ubuntu-latest
@@ -71,18 +68,21 @@ jobs:
             goarch: amd64
             rust-target: x86_64-unknown-linux-gnu
             ext: ""
+            cc: gcc
           - os: ubuntu-latest
             arch: x86
             goos: linux
             goarch: 386
             rust-target: i686-unknown-linux-gnu
             ext: ""
+            cc: gcc
           - os: ubuntu-latest
             arch: arm64
             goos: linux
             goarch: arm64
             rust-target: aarch64-unknown-linux-gnu
             ext: ""
+            cc: gcc
 
     steps:
       # ============================================================
@@ -101,14 +101,8 @@ jobs:
         with:
           go-version: ${{ env.GO_MIN_VER }}
 
-      - name: Setup MinGW (Windows)
-        if: runner.os == 'Windows'
-        uses: egorand/setup-mingw@v3
-        with:
-          platform: ${{ matrix.arch == 'x86' && '32' || '64' }}
-
       # ============================================================
-      # Build Rust Core
+      # Build Rust Core & CFM
       # ============================================================
       - name: Build Core (Rust)
         working-directory: core
@@ -126,22 +120,25 @@ jobs:
       # Build Go Server & Client
       # ============================================================
       - name: Build Server (Go)
-        if: matrix.arch != 'x86'
         run: |
-          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          export CGO_ENABLED=1
+          export CC=${{ matrix.cc }}
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
           go build -o smp-server${{ matrix.ext }} ./cmd/smp-server/
         working-directory: server
         shell: bash
 
       - name: Build Client (Go)
-        if: matrix.arch != 'x86'
         run: |
-          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          export CGO_ENABLED=1
+          export CC=${{ matrix.cc }}
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
           go build -o smp${{ matrix.ext }} ./cmd/smp/
         working-directory: client
         shell: bash
 
-      # Note: x86 (32-bit) builds skipped because cgo 32-bit is unstable on CI
       # ============================================================
       # Collect & Upload
       # ============================================================
