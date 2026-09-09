@@ -7,8 +7,8 @@ import (
 )
 
 /*
-    #cgo CFLAGS: -I/../../../core/include
-    #cgo LDFLAGS: -L/../../../core/target/release -lsmp_core
+    #cgo CFLAGS: -I${SRCDIR}/../../../core/include
+    #cgo LDFLAGS: -L${SRCDIR}/../../../core/target/release -lsmp_core
     typedef __builtin_va_list __gnuc_va_list;
     #include <stdlib.h>
     #include "smp.h"

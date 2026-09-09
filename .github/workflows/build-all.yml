@@ -117,6 +117,22 @@ jobs:
         shell: bash
 
       # ============================================================
+      # Copy Rust artifacts to path expected by cgo LDFLAGS
+      # ============================================================
+      - name: Copy Rust artifacts to core/target/release
+        shell: bash
+        run: |
+          mkdir -p core/target/release
+          cp core/target/${{ matrix.rust-target }}/release/libsmp_core.so core/target/release/ 2>/dev/null || \
+          cp core/target/${{ matrix.rust-target }}/release/libsmp_core.dylib core/target/release/ 2>/dev/null || \
+          cp core/target/${{ matrix.rust-target }}/release/smp_core.dll core/target/release/ || true
+          cp core/target/${{ matrix.rust-target }}/release/libcfm.so core/target/release/ 2>/dev/null || \
+          cp core/target/${{ matrix.rust-target }}/release/libcfm.dylib core/target/release/ 2>/dev/null || \
+          cp core/target/${{ matrix.rust-target }}/release/cfm.dll core/target/release/ || true
+          echo "=== core/target/release ==="
+          ls -la core/target/release/
+
+      # ============================================================
       # Build Go Server & Client
       # ============================================================
       - name: Build Server (Go)
