@@ -1,8 +1,180 @@
 # SMP CLI Client — Developer Documentation
 
+## en-uk
+
+The Go CLI client implements push/pull/cfm/token commands, calling the Rust core library via cgo for message assembly and parsing.
+
+### Package Structure
+
+```
+client/
+├── cmd/smp/main.go              # Entry point (thin layer)
+└── internal/cli/
+    ├── ffi.go                   # FFI wrapper (message assembly, token extraction)
+    ├── net.go                   # TCP connection and communication
+    ├── push.go                  # push command
+    ├── pull.go                  # pull command
+    ├── cfm.go                   # cfm upload/download
+    ├── token.go                 # token management
+    └── helpers.go               # Utility functions (ID generation, address retrieval, token extraction)
+```
+
+### Command Structure
+
+```
+smp [global flags] <command> [command flags]
+
+Global Flags:
+  --server URL       Server address (smp://host:port)
+  --token TOKEN      Authentication token (or SMP_TOKEN env var)
+  --timeout N        Timeout in seconds (default 30)
+  --verbose          Verbose output
+
+Commands:
+  push <route>       Push message
+  pull               Pull messages
+  cfm <file>         Upload file
+  cfm <cfm_id>       Download file
+  token <action>     Token management (generate|list|revoke)
+```
+
+### FFI Wrapper
+
+#### Message Assembly
+
+```go
+func AssembleMessage(
+    tokenTail string, msgID uint64, route string,
+    userData []byte, contextPairs []ContextPair, extensions string,
+) ([]byte, error)
+```
+
+Calls `smp_assemble_message` FFI function to assemble a complete SMP message (with MD5 Check).
+
+#### Token Extraction
+
+```go
+func ExtractTokenTail(fullToken string) string
+```
+
+Calls `smp_extract_token_tail` FFI function to extract the last 8 hex characters from the full token (`smpt128-<32hex>`).
+
+### Network Communication
+
+```go
+func (c *Config) ConnectToServer() (net.Conn, error)
+func SendAndReceive(conn net.Conn, msg []byte, timeout int) ([]byte, error)
+```
+
+- Parses `smp://` or `smp+ssh://` URLs
+- Timeout connection
+- Write message, read response
+
+### Push Command
+
+```
+smp push <route> [--data text] [--file file] [--context ref:ts]... [--id N]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `<route>` | Target route |
+| `--data TEXT` | Message data (text) |
+| `--file PATH` | Read data from file |
+| `--context REF:TS` | Context reference (hex ID:decimal timestamp, comma-separated) |
+| `--id N` | Message ID (0=auto-generated) |
+
+**Data source priority**: `--file` > `--data` > stdin
+
+### Pull Command
+
+```
+smp pull [--limit N] [--offset N] [--after TS] [--before TS] [--route R] [--id N] [--output table|json|raw]
+```
+
+Builds query string `limit=N&offset=N&after=TS&before=TS&route=R&id=N`, sends to `_pull` route.
+
+**Output formats**:
+- `table`: Table display (ID, route, size, data)
+- `json`: Raw JSON response
+- `raw`: Raw binary output
+
+### CFM Command
+
+#### Upload
+
+```
+smp cfm <file> [--expire 24h] [--public]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `<file>` | File path |
+| `--expire DUR` | Expiry time (`24h`=24 hours, `30m`=30 minutes) |
+| `--public` | Public access |
+
+Uses `_cfm_upload` route, sets bit 63 on Message ID to mark as CFM.
+
+#### Download
+
+```
+smp cfm <cfm_id> [-o output]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `<cfm_id>` | CFM ID (hex or decimal) |
+| `-o OUTPUT` | Output file path (if not specified, outputs to stdout) |
+
+Uses `_cfm_download` route, query string is `cfm_id=0x...`.
+
+### Token Command
+
+```
+smp token generate     # Generate new token
+smp token list         # List all tokens
+smp token revoke <tail> # Revoke token
+```
+
+Uses `_token_generate`, `_token_list`, `_token_revoke` routes respectively.
+
+### cgo FFI Bindings
+
+```go
+/*
+    #cgo CFLAGS: -I${SRCDIR}/../../../core/include
+    #cgo LDFLAGS: -L${SRCDIR}/../../../core/target/release -lsmp_core
+    typedef __builtin_va_list __gnuc_va_list;
+    #include <stdlib.h>
+    #include "smp.h"
+*/
+import "C"
+```
+
+### Building
+
+```bash
+cd client
+export CGO_ENABLED=1
+export CC=x86_64-w64-mingw32-gcc  # Windows
+export GOTMPDIR=$PWD/tmp
+go build -o smp.exe ./cmd/smp/
+```
+
+### Key Design
+
+1. **Global config**: `Config` struct holds server/token/timeout/verbose, passed by pointer to each command
+2. **Token extraction**: Full token is extracted locally on the client (8 hex tail), only the tail is sent to the server
+3. **Context format**: `refID:timestamp` comma-separated, refID in hex, timestamp in decimal
+4. **CFM ID parsing**: Supports `0x` prefix (hex) and plain numbers (decimal)
+
+---
+
+## zh-cn
+
 Go CLI 客户端实现 push/pull/cfm/token 命令，通过 cgo 调用 Rust 核心库组装和解析消息。
 
-## 包结构
+### 包结构
 
 ```
 client/
@@ -17,7 +189,7 @@ client/
     └── helpers.go               # 工具函数（ID 生成、地址获取、Token 提取）
 ```
 
-## 命令结构
+### 命令结构
 
 ```
 smp [global flags] <command> [command flags]
@@ -36,9 +208,9 @@ Commands:
   token <action>     Token 管理 (generate|list|revoke)
 ```
 
-## FFI 封装
+### FFI 封装
 
-### 消息组装
+#### 消息组装
 
 ```go
 func AssembleMessage(
@@ -49,7 +221,7 @@ func AssembleMessage(
 
 调用 `smp_assemble_message` FFI 函数，组装完整 SMP 消息（含 MD5 Check）。
 
-### Token 提取
+#### Token 提取
 
 ```go
 func ExtractTokenTail(fullToken string) string
@@ -57,7 +229,7 @@ func ExtractTokenTail(fullToken string) string
 
 调用 `smp_extract_token_tail` FFI 函数，从完整 Token（`smpt128-<32hex>`）提取最后 8 个 hex 字符。
 
-## 网络通信
+### 网络通信
 
 ```go
 func (c *Config) ConnectToServer() (net.Conn, error)
@@ -68,7 +240,7 @@ func SendAndReceive(conn net.Conn, msg []byte, timeout int) ([]byte, error)
 - 超时连接
 - 写入消息，读取响应
 
-## Push 命令
+### Push 命令
 
 ```
 smp push <route> [--data text] [--file file] [--context ref:ts]... [--id N]
@@ -84,7 +256,7 @@ smp push <route> [--data text] [--file file] [--context ref:ts]... [--id N]
 
 **数据源优先级**: `--file` > `--data` > stdin
 
-## Pull 命令
+### Pull 命令
 
 ```
 smp pull [--limit N] [--offset N] [--after TS] [--before TS] [--route R] [--id N] [--output table|json|raw]
@@ -97,9 +269,9 @@ smp pull [--limit N] [--offset N] [--after TS] [--before TS] [--route R] [--id N
 - `json`: 原始 JSON 响应
 - `raw`: 原始二进制输出
 
-## CFM 命令
+### CFM 命令
 
-### 上传
+#### 上传
 
 ```
 smp cfm <file> [--expire 24h] [--public]
@@ -113,7 +285,7 @@ smp cfm <file> [--expire 24h] [--public]
 
 使用 `_cfm_upload` 路由，Message ID 设置 bit 63 标记为 CFM。
 
-### 下载
+#### 下载
 
 ```
 smp cfm <cfm_id> [-o output]
@@ -126,7 +298,7 @@ smp cfm <cfm_id> [-o output]
 
 使用 `_cfm_download` 路由，查询字符串为 `cfm_id=0x...`。
 
-## Token 命令
+### Token 命令
 
 ```
 smp token generate     # 生成新 Token
@@ -136,7 +308,7 @@ smp token revoke <tail> # 吊销 Token
 
 分别使用 `_token_generate`、`_token_list`、`_token_revoke` 路由。
 
-## cgo FFI 绑定
+### cgo FFI 绑定
 
 ```go
 /*
@@ -149,7 +321,7 @@ smp token revoke <tail> # 吊销 Token
 import "C"
 ```
 
-## 构建
+### 构建
 
 ```bash
 cd client
@@ -159,7 +331,7 @@ export GOTMPDIR=$PWD/tmp
 go build -o smp.exe ./cmd/smp/
 ```
 
-## 关键设计
+### 关键设计
 
 1. **全局配置**: `Config` 结构体持有 server/token/timeout/verbose，通过指针传递给各命令
 2. **Token 提取**: 完整 Token 在客户端本地提取尾（8 hex），只发送尾到服务端

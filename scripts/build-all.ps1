@@ -1,13 +1,13 @@
-# build-all.ps1 — 自动化构建 SMP 项目全部组件
+# build-all.ps1 — Automated build for all SMP project components
 #
-# 用法: .\scripts\build-all.ps1 [-Clean] [-Profile <debug|release>]
+# Usage: .\scripts\build-all.ps1 [-Clean] [-Profile <debug|release>]
 #
-# 构建顺序:
-#   1. Core (Rust)  → smp_core.dll  (留在原位供 Go 链接)
-#   2. CFM  (Rust)  → cfm.dll       (留在原位)
-#   3. Server (Go)  → smp-server.exe (需要 smp_core.dll)
-#   4. Client (Go)  → smp.exe        (需要 smp_core.dll)
-#   5. 移动所有产物到 target/
+# Build order:
+#   1. Core (Rust)  → smp_core.dll  (stays in place for Go linking)
+#   2. CFM  (Rust)  → cfm.dll       (stays in place)
+#   3. Server (Go)  → smp-server.exe (needs smp_core.dll)
+#   4. Client (Go)  → smp.exe        (needs smp_core.dll)
+#   5. Copy all artifacts to target/
 
 param(
     [switch]$Clean,
@@ -16,7 +16,7 @@ param(
 )
 
 # ============================================================
-# 路径 — 硬编码项目根目录，避免 $MyInvocation 问题
+# Paths — hardcoded project root, avoid $MyInvocation issues
 $ROOT       = "D:\StaticMessageProtocol"
 $TARGET     = "$ROOT\target"
 
@@ -34,14 +34,14 @@ $cargoProfile = if ($Profile -eq "release") { "--release" } else { "" }
 $cargoTarget  = "--target x86_64-pc-windows-gnullvm"
 $goTags       = if ($Profile -eq "release") { "" } else { "-tags debug" }
 
-# 构建产物路径（原始位置）
+# Build artifact paths (original locations)
 $coreSrc    = "$CORE_DIR\target\x86_64-pc-windows-gnullvm\release\smp_core.dll"
 $coreRel    = "$CORE_DIR\target\release\smp_core.dll"
 $cfmSrc     = "$CFM_DIR\target\x86_64-pc-windows-gnullvm\release\cfm.dll"
 $serverSrc  = "$SERVER_DIR\smp-server.exe"
 $clientSrc  = "$CLIENT_DIR\smp.exe"
 
-# 最终输出路径
+# Final output paths
 $coreOut    = "$TARGET\smp_core.dll"
 $cfmOut     = "$TARGET\cfm.dll"
 $serverOut  = "$TARGET\smp-server.exe"
@@ -51,7 +51,7 @@ $serverTmp  = "$SERVER_DIR\tmp"
 $clientTmp  = "$CLIENT_DIR\tmp"
 
 # ============================================================
-# 工具
+# Utilities
 # ============================================================
 function Step($label, $cmd) {
     Write-Host ""
@@ -64,7 +64,7 @@ function Step($label, $cmd) {
 }
 
 # ============================================================
-# 清理
+# Cleanup
 # ============================================================
 if ($Clean) {
     Write-Host ""
@@ -85,7 +85,7 @@ if ($Clean) {
 }
 
 # ============================================================
-# 环境
+# Environment
 # ============================================================
 $env:PATH = "$RUST_BIN;$GO_BIN;$env:PATH"
 $env:CGO_ENABLED = "1"
@@ -97,7 +97,7 @@ New-Item -ItemType Directory -Path $serverTmp -Force | Out-Null
 New-Item -ItemType Directory -Path $clientTmp -Force | Out-Null
 
 # ============================================================
-# 构建
+# Build
 # ============================================================
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -115,7 +115,7 @@ $env:GOTMPDIR = $serverTmp
 if (-not (Step "cargo build" "cd $CORE_DIR && cargo build $cargoProfile $cargoTarget")) {
     Write-Host "FAILED" -ForegroundColor Red; exit 1
 }
-# 复制 DLL 到 core/target/release/ 供 Go cgo 链接
+# Copy DLL to core/target/release/ for Go cgo linking
 New-Item -ItemType Directory -Path "$CORE_DIR\target\release" -Force | Out-Null
 Copy-Item $coreSrc "$CORE_DIR\target\release\smp_core.dll" -Force
 

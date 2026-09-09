@@ -1,8 +1,110 @@
 # CFM Module — Developer Documentation
 
+## en-uk
+
+CFM (Cloud File Message) module provides large file hosting functionality, compiled as an independent Rust library into `cfm.dll`.
+
+### Architecture
+
+```
+cfm/
+├── Cargo.toml              # Independent Rust crate
+├── .cargo/config.toml      # gnullvm target
+├── src/lib.rs              # CFM implementation + FFI exports
+└── include/cfm.h           # C header file
+```
+
+### FFI API
+
+#### Initialization
+
+| Function | Description |
+|----------|-------------|
+| `cfm_init(base_dir, max_mb)` | Initialize storage directory, set max file size |
+
+#### File Operations
+
+| Function | Description |
+|----------|-------------|
+| `cfm_save(cf_id, data, len, uploader, public, expire)` | Upload file |
+| `cfm_load(cf_id, requester, out_buf, size, out_len)` | Download file |
+| `cfm_exists(cf_id)` | Check if file exists |
+| `cfm_size(cf_id)` | Get file size |
+| `cfm_cleanup()` | Clean up expired files |
+| `cfm_usage()` | Get storage usage |
+
+#### Metadata
+
+| Function | Description |
+|----------|-------------|
+| `cfm_get_uploader(cf_id, buf, size)` | Get uploader |
+| `cfm_get_expiry(cf_id)` | Get expiry time (Unix seconds) |
+| `cfm_is_public(cf_id)` | Check if public |
+| `cfm_list(out_ids, max, out_count)` | List all file IDs |
+
+#### Error Handling
+
+| Function | Description |
+|----------|-------------|
+| `cfm_error_message(code, buf, size)` | Get error message |
+
+### Error Codes
+
+| Error Code | Meaning |
+|------------|---------|
+| `ERR_CFM_OK` (0) | Success |
+| `ERR_CFM_NOT_FOUND` (-7001) | File not found |
+| `ERR_CFM_EXPIRED` (-7002) | File expired |
+| `ERR_CFM_NO_PERMISSION` (-7003) | No permission |
+| `ERR_CFM_TOO_LARGE` (-7004) | File exceeds size limit |
+| `ERR_CFM_STORE_FULL` (-7005) | Storage full |
+| `ERR_CFM_FORMAT_INVALID` (-7006) | File format not supported |
+| `ERR_CFM_INTERNAL` (-7099) | Internal error |
+
+### CFM ID Format
+
+CFM files use special Message IDs:
+- **bit 63 (MSB) = 1** indicates CFM reference
+- Format: `0x8000000000000001`, `0x8000000000000002`, etc.
+
+### Storage
+
+- **Filesystem storage**: Files stored as `%016x.bin` in the specified directory
+- **In-memory metadata**: `HashMap<u64, FileEntry>` stores file info
+- **Expiry cleanup**: Call `cfm_cleanup()` periodically to remove expired files
+- **Permission control**:
+  - `public = true`: Anyone can download
+  - `public = false`: Only uploader or admin can download
+
+### Building
+
+```bash
+# Direct build
+cd cfm
+cargo build --release
+
+# Using build-all.ps1
+.\scripts\build-all.ps1 -Clean
+# Artifacts output to target/cfm.dll
+```
+
+### Client Integration
+
+The `smp cfm` client command uses `cfm.dll` for file operations:
+
+```
+smp cfm install [--force]    # Install/update cfm.dll
+smp cfm push <file>          # Upload file
+smp cfm <cfm_id> -o out.bin  # Download file
+```
+
+---
+
+## zh-cn
+
 CFM (Cloud File Message) 模块提供大文件托管功能，作为独立 Rust 库编译为 `cfm.dll`。
 
-## 架构
+### 架构
 
 ```
 cfm/
@@ -12,15 +114,15 @@ cfm/
 └── include/cfm.h           # C 头文件
 ```
 
-## FFI API
+### FFI API
 
-### 初始化
+#### 初始化
 
 | 函数 | 说明 |
 |------|------|
 | `cfm_init(base_dir, max_mb)` | 初始化存储目录，设置最大文件大小 |
 
-### 文件操作
+#### 文件操作
 
 | 函数 | 说明 |
 |------|------|
@@ -31,7 +133,7 @@ cfm/
 | `cfm_cleanup()` | 清理过期文件 |
 | `cfm_usage()` | 获取存储用量 |
 
-### 元数据
+#### 元数据
 
 | 函数 | 说明 |
 |------|------|
@@ -40,13 +142,13 @@ cfm/
 | `cfm_is_public(cf_id)` | 检查是否公开 |
 | `cfm_list(out_ids, max, out_count)` | 列出所有文件 ID |
 
-### 错误处理
+#### 错误处理
 
 | 函数 | 说明 |
 |------|------|
 | `cfm_error_message(code, buf, size)` | 获取错误消息 |
 
-## 错误码
+### 错误码
 
 | 错误码 | 含义 |
 |--------|------|
@@ -59,13 +161,13 @@ cfm/
 | `ERR_CFM_FORMAT_INVALID` (-7006) | 文件格式不支持 |
 | `ERR_CFM_INTERNAL` (-7099) | 内部错误 |
 
-## CFM ID 格式
+### CFM ID 格式
 
 CFM 文件使用特殊的 Message ID：
 - **bit 63 (MSB) = 1** 表示 CFM 引用
 - 格式：`0x8000000000000001`、`0x8000000000000002` 等
 
-## 存储
+### 存储
 
 - **文件系统存储**：文件以 `%016x.bin` 格式存储在指定目录
 - **内存元数据**：`HashMap<u64, FileEntry>` 存储文件信息
@@ -74,7 +176,7 @@ CFM 文件使用特殊的 Message ID：
   - `public = true`：所有人可下载
   - `public = false`：仅上传者或管理员可下载
 
-## 构建
+### 构建
 
 ```bash
 # 直接构建
@@ -86,7 +188,7 @@ cargo build --release
 # 产物自动输出到 target/cfm.dll
 ```
 
-## 与客户端集成
+### 与客户端集成
 
 客户端 `smp cfm` 命令通过 `cfm.dll` 实现文件操作：
 

@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 禁用自动 token 持久化，避免 credential helper 干扰
+      # Disable automatic token persistence to avoid credential helper interference
       - name: Checkout Main
         uses: actions/checkout@v4
         with:
