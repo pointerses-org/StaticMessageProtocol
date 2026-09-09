@@ -29,24 +29,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows
+          # Windows (GNU/LLVM toolchain via llvm-mingw, matches local dev)
           - os: windows-latest
             arch: x86_64
             goos: windows
             goarch: amd64
-            rust-target: x86_64-pc-windows-msvc
+            rust-target: x86_64-pc-windows-gnullvm
+            rust-linker: ""
             ext: ".exe"
-            cc: clang
-          # Windows arm64 is skipped: Go cgo cannot cross-compile to ARM64
-          # on x86_64 Windows (clang cannot assemble ARM64 instructions).
-          # Use a windows-11-arm runner to build natively instead.
+            cc: x86_64-w64-mingw32-gcc
+          - os: windows-latest
+            arch: x86
+            goos: windows
+            goarch: 386
+            rust-target: i686-pc-windows-gnu
+            rust-linker: i686-w64-mingw32-gcc
+            ext: ".exe"
+            cc: i686-w64-mingw32-gcc
+          - os: windows-latest
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            rust-target: aarch64-pc-windows-gnullvm
+            rust-linker: ""
+            ext: ".exe"
+            cc: aarch64-w64-mingw32-gcc
 
-          # macOS
+          # macOS (no 32-bit x86 support in Go/Rust toolchains)
           - os: macos-latest
             arch: x86_64
             goos: darwin
             goarch: amd64
             rust-target: x86_64-apple-darwin
+            rust-linker: ""
             ext: ""
             cc: clang
           - os: macos-latest
@@ -54,6 +69,7 @@ jobs:
             goos: darwin
             goarch: arm64
             rust-target: aarch64-apple-darwin
+            rust-linker: ""
             ext: ""
             cc: clang
 
@@ -63,6 +79,7 @@ jobs:
             goos: linux
             goarch: amd64
             rust-target: x86_64-unknown-linux-gnu
+            rust-linker: ""
             ext: ""
             cc: gcc
           - os: ubuntu-latest
@@ -70,6 +87,7 @@ jobs:
             goos: linux
             goarch: 386
             rust-target: i686-unknown-linux-gnu
+            rust-linker: ""
             ext: ""
             cc: gcc
           - os: ubuntu-latest
@@ -77,8 +95,9 @@ jobs:
             goos: linux
             goarch: arm64
             rust-target: aarch64-unknown-linux-gnu
+            rust-linker: aarch64-linux-gnu-gcc
             ext: ""
-            cc: gcc
+            cc: aarch64-linux-gnu-gcc
 
     steps:
       # ============================================================
@@ -108,8 +127,23 @@ jobs:
           fi
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           fi
+
+      # Install llvm-mingw on Windows: one toolchain provides
+      # x86_64 / i686 / aarch64 gcc wrappers plus the MinGW runtime
+      # (libmingwex.a etc.) that Go's external linking requires.
+      - name: Install llvm-mingw (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest' -Headers @{ 'User-Agent' = 'smp-ci' }
+          $asset = $rel.assets | Where-Object { $_.name -match 'msvcrt-x86_64\.zip$' } | Select-Object -First 1
+          if (-not $asset) { throw 'llvm-mingw msvcrt asset not found' }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile 'llvm-mingw.zip'
+          Expand-Archive 'llvm-mingw.zip' -DestinationPath '.'
+          $dir = Get-ChildItem -Directory -Filter 'llvm-mingw-*' | Select-Object -First 1
+          "$($dir.FullName)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii
 
       # ============================================================
       # Build Rust Core & CFM
@@ -117,12 +151,20 @@ jobs:
       - name: Build Core (Rust)
         working-directory: core
         run: |
+          export CC=${{ matrix.cc }}
+          if [ -n "${{ matrix.rust-linker }}" ]; then
+            export CARGO_TARGET_$(echo ${{ matrix.rust-target }} | tr '[:lower:]' '[:upper:]' | tr '-' '_')_LINKER=${{ matrix.rust-linker }}
+          fi
           cargo build --release --target ${{ matrix.rust-target }}
         shell: bash
 
       - name: Build CFM (Rust)
         working-directory: cfm
         run: |
+          export CC=${{ matrix.cc }}
+          if [ -n "${{ matrix.rust-linker }}" ]; then
+            export CARGO_TARGET_$(echo ${{ matrix.rust-target }} | tr '[:lower:]' '[:upper:]' | tr '-' '_')_LINKER=${{ matrix.rust-linker }}
+          fi
           cargo build --release --target ${{ matrix.rust-target }}
         shell: bash
 
@@ -133,13 +175,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p core/target/release
-          # Copy smp_core dynamic library
-          cp core/target/${{ matrix.rust-target }}/release/libsmp_core.so core/target/release/ 2>/dev/null || \
-          cp core/target/${{ matrix.rust-target }}/release/libsmp_core.dylib core/target/release/ 2>/dev/null || \
-          cp core/target/${{ matrix.rust-target }}/release/smp_core.dll core/target/release/ || true
-          # Copy MSVC import library (.lib) for Windows cgo linking
-          cp core/target/${{ matrix.rust-target }}/release/smp_core.lib core/target/release/ 2>/dev/null || \
-          cp core/target/${{ matrix.rust-target }}/release/smp_core.dll.lib core/target/release/ 2>/dev/null || true
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp core/target/${{ matrix.rust-target }}/release/smp_core.dll core/target/release/ 2>/dev/null || true
+            cp core/target/${{ matrix.rust-target }}/release/libsmp_core.dll.a core/target/release/ 2>/dev/null || true
+          elif [ "${{ matrix.goos }}" = "darwin" ]; then
+            cp core/target/${{ matrix.rust-target }}/release/libsmp_core.dylib core/target/release/ 2>/dev/null || true
+          else
+            cp core/target/${{ matrix.rust-target }}/release/libsmp_core.so core/target/release/ 2>/dev/null || true
+          fi
           echo "=== Rust output: core/target/${{ matrix.rust-target }}/release/ ==="
           ls -la core/target/${{ matrix.rust-target }}/release/ 2>/dev/null || true
           echo "=== core/target/release ==="
@@ -176,7 +219,9 @@ jobs:
         run: |
           mkdir -p target
           cp core/target/${{ matrix.rust-target }}/release/smp_core* target/ 2>/dev/null || true
+          cp core/target/${{ matrix.rust-target }}/release/libsmp_core* target/ 2>/dev/null || true
           cp cfm/target/${{ matrix.rust-target }}/release/cfm* target/ 2>/dev/null || true
+          cp cfm/target/${{ matrix.rust-target }}/release/libcfm* target/ 2>/dev/null || true
           cp server/smp-server* target/ 2>/dev/null || true
           cp client/smp* target/ 2>/dev/null || true
           echo "=== target/ contents ==="
