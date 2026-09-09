@@ -13,39 +13,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Disable automatic token persistence to avoid credential helper interference
       - name: Checkout Main
         uses: actions/checkout@v4
         with:
           ref: main
-          persist-credentials: false
+          persist-credentials: true
           fetch-depth: 0
-
-      - name: Fetch Actions Branch
-        run: |
-          git fetch origin actions:actions || true
 
       - name: Check if Sync Needed
         id: check
         shell: bash
         run: |
           MAIN_COMMIT=$(git rev-parse main)
-          ACTIONS_COMMIT=$(git rev-parse actions 2>/dev/null || echo "")
+
+          # Check if actions branch exists locally
+          if git rev-parse --verify actions > /dev/null 2>&1; then
+            ACTIONS_COMMIT=$(git rev-parse actions)
+          else
+            ACTIONS_COMMIT=""
+          fi
 
           if [ -z "$ACTIONS_COMMIT" ]; then
-            echo "actions_branch_exists=false" >> $GITHUB_OUTPUT
+            echo "sync=true" >> $GITHUB_OUTPUT
             echo "Actions branch does not exist yet, will create it"
           elif [ "$MAIN_COMMIT" != "$ACTIONS_COMMIT" ]; then
-            echo "actions_branch_exists=true" >> $GITHUB_OUTPUT
+            echo "sync=true" >> $GITHUB_OUTPUT
             echo "Sync needed: main=$MAIN_COMMIT actions=$ACTIONS_COMMIT"
           else
-            echo "actions_branch_exists=true" >> $GITHUB_OUTPUT
+            echo "sync=false" >> $GITHUB_OUTPUT
             echo "Already in sync: $MAIN_COMMIT"
-            echo "skip=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Push to Actions Branch
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.sync == 'true'
         shell: bash
         run: |
           git checkout -B actions main
