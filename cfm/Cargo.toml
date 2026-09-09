@@ -1,0 +1,23 @@
+[package]
+name = "cfm"
+version = "0.1.0"
+edition = "2021"
+description = "CFM (Cloud File Message) module for SMP protocol"
+license = "MIT"
+
+[lib]
+name = "cfm"
+crate-type = ["cdylib", "staticlib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1
+debug = true

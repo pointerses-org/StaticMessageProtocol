@@ -1,0 +1,17 @@
+# Rust build output
+core/target/
+cfm/target/
+
+# Go build artifacts
+server/tmp/
+client/tmp/
+server/smp-server.exe
+client/smp.exe
+
+# Unified build output
+target/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

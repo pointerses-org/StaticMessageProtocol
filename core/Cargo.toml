@@ -1,0 +1,24 @@
+[package]
+name = "smp-core"
+version = "0.1.0"
+edition = "2021"
+description = "SMP (Static Message Protocol) core library with C-compatible FFI"
+license = "MIT"
+
+[lib]
+name = "smp_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+md5 = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1
+debug = true

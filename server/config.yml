@@ -1,0 +1,34 @@
+# SMP Server Configuration
+# This file configures server behavior, permissions, and access control.
+
+# Server settings
+listen: 0.0.0.0:9932
+retention: 10
+cfm_path: ./cfm-storage
+cfm_max_mb: 100
+cfm_interval: 10
+verbose: false
+
+# Base permissions granted to all new users
+base-permission:
+  - read
+  - write
+
+# Special permissions for specific users
+special-permission:
+  admin:
+    - read
+    - write
+    - delete
+    - manage
+
+# Access control
+blacklist-enabled: false
+blacklist:
+  - baduser1
+  - baduser2
+
+whitelist-enabled: false
+whitelist:
+  - trusteduser1
+  - trusteduser2

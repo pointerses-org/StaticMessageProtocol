@@ -1,0 +1,56 @@
+name: Auto Sync Main → Actions
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync to Actions Branch
+    runs-on: ubuntu-latest
+
+    steps:
+      # 禁用自动 token 持久化，避免 credential helper 干扰
+      - name: Checkout Main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Fetch Actions Branch
+        run: |
+          git fetch origin actions:actions || true
+
+      - name: Check if Sync Needed
+        id: check
+        shell: bash
+        run: |
+          MAIN_COMMIT=$(git rev-parse main)
+          ACTIONS_COMMIT=$(git rev-parse actions 2>/dev/null || echo "")
+
+          if [ -z "$ACTIONS_COMMIT" ]; then
+            echo "actions_branch_exists=false" >> $GITHUB_OUTPUT
+            echo "Actions branch does not exist yet, will create it"
+          elif [ "$MAIN_COMMIT" != "$ACTIONS_COMMIT" ]; then
+            echo "actions_branch_exists=true" >> $GITHUB_OUTPUT
+            echo "Sync needed: main=$MAIN_COMMIT actions=$ACTIONS_COMMIT"
+          else
+            echo "actions_branch_exists=true" >> $GITHUB_OUTPUT
+            echo "Already in sync: $MAIN_COMMIT"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push to Actions Branch
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
+        run: |
+          git checkout -B actions main
+          git push --force origin actions:actions
+
+          echo "=== Sync complete ==="
+          echo "main:   $(git rev-parse main)"
+          echo "actions: $(git rev-parse actions)"
