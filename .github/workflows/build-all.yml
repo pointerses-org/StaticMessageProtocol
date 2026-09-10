@@ -238,3 +238,90 @@ jobs:
           path: target/
           if-no-files-found: warn
           retention-days: 30
+
+  # ============================================================
+  # Merge every per-arch artifact into one smptools.zip
+  # ============================================================
+  merge-artifacts:
+    name: Merge Artifacts
+    runs-on: ubuntu-latest
+    needs: build
+    # needs.build.result is aggregated over the whole matrix, so it only
+    # resolves to 'success' when every build job succeeded. One failed
+    # matrix leg therefore skips this job instead of failing it.
+    if: ${{ needs.build.result == 'success' }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Every matching artifact of this run. Each one lands in its own
+          # folder named after the artifact, i.e. smp-<matrix.os>-<matrix.arch>/.
+          pattern: smp-*
+
+      - name: Reorganize into <os>-<arch>-smptools folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zip >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zip unzip
+          fi
+
+          OUT=smptools
+          rm -rf "$OUT" smptools.zip
+          mkdir -p "$OUT"
+
+          shopt -s nullglob
+          arts=(smp-*/)
+          if [ "${#arts[@]}" -eq 0 ]; then
+            echo "::error::No artifacts matching smp-* were downloaded"
+            exit 1
+          fi
+
+          for dir in "${arts[@]}"; do
+            art="$(basename "$dir")"      # smp-windows-latest-x86_64
+            key="${art#smp-}"             # windows-latest-x86_64
+            arch="${key##*-}"             # x86_64
+            host="${key%"-$arch"}"        # windows-latest
+
+            case "$host" in
+              windows*)       sys=windows ;;
+              macos*)         sys=macos ;;
+              ubuntu*|linux*) sys=linux ;;
+              *)
+                echo "::error::Cannot map artifact '$art' to an OS name"
+                exit 1
+                ;;
+            esac
+
+            dest="$OUT/$sys-$arch-smptools"
+            mkdir -p "$dest"
+
+            # upload-artifact@v4 stores the *contents* of target/, so the files
+            # arrive flat inside smp-<os>-<arch>/. If an artifact ever ships a
+            # single nested target/ folder instead, unwrap it so $dest stays
+            # flat either way.
+            entries=( "$dir"/* )
+            if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ] && [ "$(basename "${entries[0]}")" = "target" ]; then
+              cp -R "${entries[0]}/." "$dest/"
+            else
+              cp -R "$dir/." "$dest/"
+            fi
+
+            echo "=== $dest ==="
+            ls -la "$dest"
+          done
+
+          cd "$OUT"
+          zip -r -9 ../smptools.zip */
+          cd ..
+
+          echo "=== smptools.zip ($(du -h smptools.zip | cut -f1)) ==="
+          unzip -l smptools.zip | head -60
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smptools
+          path: smptools.zip
+          retention-days: 30
