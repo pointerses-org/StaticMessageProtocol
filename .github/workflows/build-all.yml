@@ -222,10 +222,24 @@ jobs:
         shell: bash
         run: |
           mkdir -p target
-          cp core/target/${{ matrix.rust-target }}/release/smp_core* target/ 2>/dev/null || true
-          cp core/target/${{ matrix.rust-target }}/release/libsmp_core* target/ 2>/dev/null || true
-          cp cfm/target/${{ matrix.rust-target }}/release/cfm* target/ 2>/dev/null || true
-          cp cfm/target/${{ matrix.rust-target }}/release/libcfm* target/ 2>/dev/null || true
+          R=core/target/${{ matrix.rust-target }}/release
+          C=cfm/target/${{ matrix.rust-target }}/release
+          # Ship only what a consumer runs or links against: the shared library
+          # plus its import lib on Windows. The staticlib (lib*.a), cargo's .rlib
+          # and its .d dep files are never used here -- the Go binaries link the
+          # shared library dynamically -- and they are ~37MB of the ~54MB/arch.
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp "$R/smp_core.dll" target/ 2>/dev/null || true
+            cp "$R/libsmp_core.dll.a" target/ 2>/dev/null || true
+            cp "$C/cfm.dll" target/ 2>/dev/null || true
+            cp "$C/libcfm.dll.a" target/ 2>/dev/null || true
+          elif [ "${{ matrix.goos }}" = "darwin" ]; then
+            cp "$R/libsmp_core.dylib" target/ 2>/dev/null || true
+            cp "$C/libcfm.dylib" target/ 2>/dev/null || true
+          else
+            cp "$R/libsmp_core.so" target/ 2>/dev/null || true
+            cp "$C/libcfm.so" target/ 2>/dev/null || true
+          fi
           cp server/smp-server* target/ 2>/dev/null || true
           cp client/smp* target/ 2>/dev/null || true
           echo "=== target/ contents ==="
@@ -240,7 +254,7 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # Merge every per-arch artifact into one smptools.zip
+  # Merge every per-arch artifact into one smptools/ bundle
   # ============================================================
   merge-artifacts:
     name: Merge Artifacts
@@ -262,13 +276,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v zip >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y zip unzip
-          fi
 
           OUT=smptools
-          rm -rf "$OUT" smptools.zip
+          rm -rf "$OUT"
           mkdir -p "$OUT"
 
           shopt -s nullglob
@@ -312,16 +322,17 @@ jobs:
             ls -la "$dest"
           done
 
-          cd "$OUT"
-          zip -r -9 ../smptools.zip */
-          cd ..
-
-          echo "=== smptools.zip ($(du -h smptools.zip | cut -f1)) ==="
-          unzip -l smptools.zip | head -60
+          echo "=== final layout under $OUT/ ==="
+          find "$OUT" -type f | sort
+          echo "=== $(find "$OUT" -type f | wc -l) files, $(du -sh "$OUT" | cut -f1) total ==="
 
       - name: Upload merged artifact
         uses: actions/upload-artifact@v4
         with:
           name: smptools
-          path: smptools.zip
+          # Upload the 8 folders directly. GitHub wraps whatever it is given in
+          # its own zip on download, so there is exactly one archive and nothing
+          # to extract twice -- an inner smptools.zip only duplicated ~430MB of
+          # already-compressed binaries.
+          path: smptools/*
           retention-days: 30
