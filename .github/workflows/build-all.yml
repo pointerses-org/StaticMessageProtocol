@@ -29,7 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows (GNU/LLVM toolchain via llvm-mingw, matches local dev)
+          # Windows: all three arches use *-windows-gnullvm, which links with rust-lld
+          # and therefore needs no libgcc/libgcc_eh (llvm-mingw does not ship them).
+          # llvm-mingw still supplies the libmingwex/libmingw32 runtime that Go's
+          # external linking requires. There is no i686-mingw-w64 equivalent, so gnullvm
+          # is the only option for x86 (see mstorsjo/llvm-mingw#551).
           - os: windows-latest
             arch: x86_64
             goos: windows
@@ -42,8 +46,8 @@ jobs:
             arch: x86
             goos: windows
             goarch: 386
-            rust-target: i686-pc-windows-gnu
-            rust-linker: i686-w64-mingw32-gcc
+            rust-target: i686-pc-windows-gnullvm
+            rust-linker: ""
             ext: ".exe"
             cc: i686-w64-mingw32-gcc
           - os: windows-latest
