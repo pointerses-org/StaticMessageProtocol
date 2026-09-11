@@ -1,17 +1,23 @@
-# Rust build output
+# Rust: cargo output for the two crates. build-all.ps1 also copies the built
+# DLLs into core/target/release/ for cgo linking (:118-120).
 core/target/
 cfm/target/
 
-# Go build artifacts
+# Go: per-module GOTMPDIR. build-all.ps1 creates these (:96-97) and points
+# $env:GOTMPDIR at them while building (:114, :136, :146).
 server/tmp/
 client/tmp/
+
+# Go: in-module build output. The collected copies land in target/ instead.
 server/smp-server.exe
 client/smp.exe
 
-# Unified build output
+# Unified build output: build-all.ps1 step 5 copies smp_core.dll, cfm.dll,
+# smp-server.exe and smp.exe here.
 target/
 
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
+# Server runtime data: store/cfm.go:34 does os.MkdirAll(cfm_path) and :52
+# writes the uploaded blobs there. server/config.yml sets cfm_path to
+# ./cfm-storage, so running the server from the repo root or from server/
+# drops the blobs in-tree.
+cfm-storage/
