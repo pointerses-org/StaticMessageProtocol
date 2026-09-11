@@ -33,8 +33,11 @@ func (ts *TokenStore) Generate(username string) string {
 	var hex [16]byte
 	r.Read(hex[:])
 	full := fmt.Sprintf("smpt128-%x", hex[:])
-	tail := fmt.Sprintf("%02x%02x%02x%02x%02x%02x%02x%02x",
-		hex[12], hex[13], hex[14], hex[15])
+	// Tail is the last 4 bytes = 8 hex chars. This must match TOKEN_TAIL_LEN
+	// (core/src/types.rs) exactly, or the client's extracted tail never matches
+	// this key and every Lookup misses. fmt repeats a missing argument for extra
+	// specifiers, so "%02x" x8 with 4 args silently produced a 16-char tail.
+	tail := fmt.Sprintf("%x", hex[12:])
 
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

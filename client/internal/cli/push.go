@@ -41,21 +41,39 @@ func Push(args []string) error {
     protocol := SelectProtocol(*force, protocolFlags)
 
     cfg := LoadConfig()
-    var serverAddr string
+    var serverAddr, userAddr string
     if fs.NArg() >= 1 {
         serverAddr = fs.Arg(0)
         if *upstream {
             cfg.Server = serverAddr
             cfg.Protocol = protocol
-            cfg.SaveConfig()
         }
     } else if cfg.Server != "" {
         serverAddr = cfg.Server
     } else {
-        return fmt.Errorf("usage: smp push [-flags] <smp@server_ip>")
+        return fmt.Errorf("usage: smp push [-flags] <smp@server_ip> <smp@username>")
+    }
+
+    if fs.NArg() >= 2 {
+        userAddr = fs.Arg(1)
+        if *upstream {
+            cfg.User = userAddr
+        }
+    } else if cfg.User != "" {
+        userAddr = cfg.User
+    } else {
+        return fmt.Errorf("usage: smp push [-flags] <smp@server_ip> <smp@username>")
+    }
+
+    if *upstream {
+        cfg.SaveConfig()
     }
 
     ip, err := ParseAddr(serverAddr)
+    if err != nil {
+        return err
+    }
+    user, err := ParseUser(userAddr)
     if err != nil {
         return err
     }
@@ -78,7 +96,9 @@ func Push(args []string) error {
 
     msgID := GenerateID()
 
-    msg, err := AssembleMessage(tokenTail, msgID, serverAddr, userData, ctxPairs, "")
+    // Messages are addressed to the user, not to the server: the server stores
+    // them under this route and pull queries route=smp@<username>.
+    msg, err := AssembleMessage(tokenTail, msgID, "smp@"+user, userData, ctxPairs, "")
     if err != nil {
         return fmt.Errorf("assemble: %w", err)
     }

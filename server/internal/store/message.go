@@ -95,6 +95,23 @@ func (ms *MessageStore) GetByID(msgID uint64) *StoredMessage {
 	return nil
 }
 
+// LatestID returns the ID of the newest message in route, or 0 when the inbox is
+// empty. Newest means the most recent Timestamp; ties keep the earliest write.
+func (ms *MessageStore) LatestID(route string) uint64 {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	var newest *StoredMessage
+	for _, msg := range ms.messages[route] {
+		if newest == nil || msg.Timestamp.After(newest.Timestamp) {
+			newest = msg
+		}
+	}
+	if newest == nil {
+		return 0
+	}
+	return newest.ID
+}
+
 // Cleanup removes expired messages and returns the count removed.
 func (ms *MessageStore) Cleanup() int {
 	ms.mu.Lock()

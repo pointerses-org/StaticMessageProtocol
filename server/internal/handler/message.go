@@ -4,6 +4,7 @@ package handler
 import (
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -85,17 +86,38 @@ func (h *Handler) ProcessParsedMessage(handle *C.SmpParser, conn Writer) {
 		return
 	}
 
+	// Command policy: base-permission / special-permission hold command globs
+	// such as "smp *pull*", and conf-mode decides whether a match grants or
+	// denies access. _create is exempt -- it is the unauthenticated bootstrap,
+	// so gating it would deadlock the first user out of a token.
+	if routeStr != "_create" {
+		if !h.authorizeCommand(conn, cacheKey, routeStr, tokenFound, tokenUsername) {
+			return
+		}
+	}
+
 	// Process based on route
 	var response []byte
 	var err error
 
 	switch routeStr {
 	case "_pull":
+		if !h.authorizeInbox(conn, cacheKey, tokenUsername,
+			parseQuery(string(userData))["route"]) {
+			return
+		}
 		response, err = h.handlePull(string(userData))
+	case "_watch":
+		// Newest message ID in the caller's own inbox. Answering globally would
+		// leak other users' message IDs.
+		if !h.authorizeInbox(conn, cacheKey, tokenUsername, "smp@"+tokenUsername) {
+			return
+		}
+		response = []byte(fmt.Sprintf("last_id=0x%x", h.store.LatestID("smp@"+tokenUsername)))
 	case "_cfm_upload":
-		response, err = h.handleCFMUpload(msgID, userData)
+		response, err = h.handleCFMUpload(msgID, userData, tokenUsername)
 	case "_cfm_download":
-		response, err = h.handleCFMDownload(userData)
+		response, err = h.handleCFMDownload(userData, tokenUsername)
 	case "_token_generate":
 		params := parseQuery(string(userData))
 		username := strings.TrimSpace(params["user"])
@@ -160,15 +182,10 @@ func (h *Handler) ProcessParsedMessage(handle *C.SmpParser, conn Writer) {
 		}
 		response = buf
 	default:
-		// Validate token-user binding for push messages
-		if tokenFound && strings.HasPrefix(routeStr, "smp@") {
-			routeUser := strings.TrimPrefix(routeStr, "smp@")
-			if routeUser != tokenUsername {
-				response = errorResponse(1006, "token bound to different user")
-				h.cache.Put(cacheKey, response)
-				conn.Write(response)
-				return
-			}
+		// Every route that gets here is a user inbox, not an internal one -- the
+		// internal routes are all named cases above.
+		if !h.authorizeInbox(conn, cacheKey, tokenUsername, routeStr) {
+			return
 		}
 
 		ctxPairs := make([]store.ContextPair, ctxCount)
@@ -189,6 +206,79 @@ func (h *Handler) ProcessParsedMessage(handle *C.SmpParser, conn Writer) {
 
 	h.cache.Put(cacheKey, response)
 	conn.Write(response)
+}
+
+// routeCommand maps an SMP route to the CLI command it stands for. The config's
+// base-permission / special-permission globs match against this string, so
+// "smp *pull*" covers _pull and "smp *" covers everything.
+func routeCommand(route string) string {
+	switch route {
+	case "_pull":
+		return "smp pull"
+	case "_create":
+		return "smp create"
+	case "_list":
+		return "smp list"
+	case "_watch":
+		return "smp watch-context"
+	case "_cfm_upload":
+		return "smp cfm upload"
+	case "_cfm_download":
+		return "smp cfm download"
+	case "_token_generate":
+		return "smp token generate"
+	case "_token_list":
+		return "smp token list"
+	case "_token_revoke":
+		return "smp token revoke"
+	default:
+		// Anything else is a user inbox address such as smp@alice.
+		return "smp push"
+	}
+}
+
+// requireToken rejects callers whose token tail this server never issued and
+// writes the rejection itself. Returns true when the caller is known.
+func (h *Handler) requireToken(conn Writer, cacheKey string, tokenFound bool) bool {
+	if tokenFound {
+		return true
+	}
+	resp := errorResponse(1007, "token not found")
+	h.cache.Put(cacheKey, resp)
+	conn.Write(resp)
+	return false
+}
+
+// authorizeCommand enforces the config's command policy for a route: a known
+// token is required, then the mapped command must be allowed by
+// base-permission / special-permission under the configured conf-mode.
+func (h *Handler) authorizeCommand(conn Writer, cacheKey, route string,
+	tokenFound bool, tokenUsername string) bool {
+	if !h.requireToken(conn, cacheKey, tokenFound) {
+		return false
+	}
+	cmd := routeCommand(route)
+	allowed, why := h.cfg.CommandAllowed(tokenUsername, cmd)
+	if allowed {
+		return true
+	}
+	resp := errorResponse(6005, "command denied: "+cmd+" ("+why+")")
+	h.cache.Put(cacheKey, resp)
+	conn.Write(resp)
+	return false
+}
+
+// authorizeInbox refuses cross-user inbox access. authorizeCommand has already
+// validated the caller's token, so this only compares the target user against
+// the one the token is bound to.
+func (h *Handler) authorizeInbox(conn Writer, cacheKey, tokenUsername, inbox string) bool {
+	if strings.HasPrefix(inbox, "smp@") && strings.TrimPrefix(inbox, "smp@") != tokenUsername {
+		resp := errorResponse(1006, "token bound to different user")
+		h.cache.Put(cacheKey, resp)
+		conn.Write(resp)
+		return false
+	}
+	return true
 }
 
 func (h *Handler) handlePull(query string) ([]byte, error) {
@@ -215,24 +305,32 @@ func (h *Handler) handlePull(query string) ([]byte, error) {
 	return buf, nil
 }
 
-func (h *Handler) handleCFMUpload(msgID uint64, data []byte) ([]byte, error) {
+func (h *Handler) handleCFMUpload(msgID uint64, data []byte, uploader string) ([]byte, error) {
 	params := parseQuery(string(data))
 	minutes := 1440
 	fmt.Sscanf(params["expire"], "%d", &minutes)
 	public := params["public"] == "true"
 	cfID := msgID | (1 << 63)
-	_, err := h.cfm.Save(cfID, data, "", public, time.Duration(minutes)*time.Minute)
+	_, err := h.cfm.Save(cfID, data, uploader, public, time.Duration(minutes)*time.Minute)
 	if err != nil {
 		return nil, err
 	}
 	return []byte(fmt.Sprintf("cfm_id=0x%x", cfID)), nil
 }
 
-func (h *Handler) handleCFMDownload(data []byte) ([]byte, error) {
+func (h *Handler) handleCFMDownload(data []byte, requester string) ([]byte, error) {
 	params := parseQuery(string(data))
-	var cfID uint64
-	fmt.Sscanf(params["cfm_id"], "%d", &cfID)
-	return h.cfm.Load(cfID, "")
+	// IDs travel as "0x<16 hex>". fmt.Sscanf with %d stops at the 'x' and leaves
+	// cfID at 0, so every download missed with "CFM not found: 0".
+	raw := strings.TrimSpace(params["cfm_id"])
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		raw = raw[2:]
+	}
+	cfID, err := strconv.ParseUint(raw, 16, 64)
+	if err != nil {
+		cfID, _ = strconv.ParseUint(raw, 10, 64)
+	}
+	return h.cfm.Load(cfID, requester)
 }
 
 func serializeMessage(msg *store.StoredMessage) []byte {
@@ -273,9 +371,15 @@ type Writer interface {
 // SendError writes an error response using the standard format.
 func SendError(conn Writer, errCode int32) {
 	var buf [256]byte
-	C.smp_error_message(C.int32_t(errCode), (*C.uint8_t)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
-	msg := C.GoStringN((*C.char)(unsafe.Pointer(&buf[0])), -1)
-	conn.Write([]byte(fmt.Sprintf("error:%d:%s", errCode, msg)))
+	// smp_error_message NUL-terminates the buffer (core/src/ffi.rs), so use the
+	// returned byte count. GoStringN(ptr, -1) is read as 0xFFFFFFFF on x86 and
+	// attempts a 4 GiB allocation, which OOMs and kills the whole process.
+	n := C.smp_error_message(C.int32_t(errCode), (*C.uint8_t)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
+	if n <= 0 {
+		conn.Write([]byte(fmt.Sprintf("error:%d:unknown error", errCode)))
+		return
+	}
+	conn.Write([]byte(fmt.Sprintf("error:%d:%s", errCode, string(buf[:n]))))
 }
 
 // errorResponse creates a standard error response.

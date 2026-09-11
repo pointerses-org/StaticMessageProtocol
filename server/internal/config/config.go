@@ -4,34 +4,37 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 )
 
 // Config holds all server configuration.
 type Config struct {
-	Listen           string
-	Retention        int
-	CFMPath          string
-	CFMMaxMB         int
-	CFMIntv          int
-	Verbose          bool
-	BasePermission   []string
+	Listen            string
+	Retention         int
+	CFMPath           string
+	CFMMaxMB          int
+	CFMIntv           int
+	Verbose           bool
+	ConfMode          string
+	BasePermission    []string
 	SpecialPermission map[string][]string
-	Blacklist        []string
-	Whitelist        []string
-	WhitelistEnabled bool
-	BlacklistEnabled bool
+	Blacklist         []string
+	Whitelist         []string
+	WhitelistEnabled  bool
+	BlacklistEnabled  bool
 }
 
 // Default returns a Config with sensible defaults.
 func Default() Config {
 	return Config{
-		Listen:           "0.0.0.0:9932",
-		Retention:        10,
-		CFMPath:          "./cfm-storage",
-		CFMMaxMB:         100,
-		CFMIntv:          10,
+		Listen:            "0.0.0.0:9932",
+		Retention:         10,
+		CFMPath:           "./cfm-storage",
+		CFMMaxMB:          100,
+		CFMIntv:           10,
+		ConfMode:          "blacklist",
 		SpecialPermission: make(map[string][]string),
 	}
 }
@@ -73,7 +76,7 @@ func (c *Config) parseYAML(content string) error {
 
 		// List items like - item
 		if strings.HasPrefix(line, "- ") {
-			item := strings.TrimSpace(line[2:])
+			item := unquote(strings.TrimSpace(line[2:]))
 			switch currentSection {
 			case "base-permission":
 				c.BasePermission = append(c.BasePermission, item)
@@ -95,9 +98,11 @@ func (c *Config) parseYAML(content string) error {
 		// Key-value pairs
 		if idx := strings.Index(line, ":"); idx != -1 {
 			key := strings.TrimSpace(line[:idx])
-			value := strings.TrimSpace(line[idx+1:])
+			value := unquote(strings.TrimSpace(line[idx+1:]))
 
 			switch key {
+			case "conf-mode", "conf_mode", "config-mode":
+				c.ConfMode = value
 			case "listen":
 				c.Listen = value
 			case "retention":
@@ -124,20 +129,30 @@ func (c *Config) parseYAML(content string) error {
 				c.Whitelist = strings.Split(value, ",")
 				currentSection = "whitelist"
 			case "special-permission":
-				// Sub-key like admin: read,write,delete
+				// Inline form: "special-permission: admin: read,write,delete" --
+				// the part after the first colon is "username: perm1,perm2".
 				if value != "" {
-					c.SpecialPermission[key] = strings.Split(value, ",")
+					if parts := strings.SplitN(value, ":", 2); len(parts) == 2 {
+						c.SpecialPermission[strings.TrimSpace(parts[0])] =
+							strings.Split(parts[1], ",")
+					}
 				} else {
+					// Block form: this line only opens the section; a nested
+					// "admin:" line below it names the user.
 					currentSection = "special-permission"
-					currentMapKey = key
+					currentMapKey = ""
 				}
 			default:
-				// Check if it's a sub-key under special-permission
-				if currentSection == "special-permission" && value != "" {
-					if c.SpecialPermission[key] == nil {
-						c.SpecialPermission[key] = []string{}
+				// A sub-key under special-permission: either "admin: read,write"
+				// or a bare "admin:" introducing a "- read" block below it. The
+				// bare form must set currentMapKey, otherwise the "- " items
+				// below it get attached to the section name instead of the user.
+				if currentSection == "special-permission" {
+					if value == "" {
+						currentMapKey = key
+					} else {
+						c.SpecialPermission[key] = strings.Split(value, ",")
 					}
-					c.SpecialPermission[key] = strings.Split(value, ",")
 				}
 			}
 		}
@@ -154,6 +169,17 @@ func (c *Config) parseYAML(content string) error {
 	return nil
 }
 
+// unquote strips one pair of surrounding double or single quotes, so that
+// conf-mode: "whitelist" compares equal to whitelist.
+func unquote(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
 func cleanSlice(s []string) []string {
 	result := []string{}
 	for _, item := range s {
@@ -165,25 +191,41 @@ func cleanSlice(s []string) []string {
 	return result
 }
 
-// CheckPermission checks if a user has a specific permission.
-func (c *Config) CheckPermission(username string, permission string) bool {
-	// Check special permissions first
-	if perms, ok := c.SpecialPermission[username]; ok {
-		for _, p := range perms {
-			if p == permission {
-				return true
-			}
+// NormalizeConfMode maps the configured conf-mode to "whitelist" or "blacklist".
+// Anything that is not explicitly "whitelist" counts as blacklist, so a missing
+// or misspelled value denies nothing.
+func (c *Config) NormalizeConfMode() string {
+	if c.ConfMode == "whitelist" {
+		return "whitelist"
+	}
+	return "blacklist"
+}
+
+// CommandAllowed reports whether username may run the command, plus a short
+// reason when it may not. The effective patterns are base-permission plus
+// special-permission[username]; each is a glob matched against the command
+// string, and conf-mode decides whether a match grants or denies access:
+//
+//	conf-mode: "whitelist"  ->  allowed only if some pattern matches
+//	conf-mode: "blacklist"  ->  allowed only if no pattern matches
+func (c *Config) CommandAllowed(username, command string) (bool, string) {
+	matched := ""
+	for _, p := range c.GetPermissions(username) {
+		if ok, _ := path.Match(p, command); ok {
+			matched = p
+			break
 		}
 	}
-
-	// Check base permissions
-	for _, p := range c.BasePermission {
-		if p == permission {
-			return true
+	if c.NormalizeConfMode() == "whitelist" {
+		if matched != "" {
+			return true, ""
 		}
+		return false, "no permission matches " + command
 	}
-
-	return false
+	if matched != "" {
+		return false, "permission " + matched + " denies " + command
+	}
+	return true, ""
 }
 
 // IsBlacklisted checks if a user is blacklisted.
@@ -226,18 +268,26 @@ func (c *Config) HasAccess(username string) bool {
 	return true
 }
 
-// GetPermissions returns the permissions for a user.
+// GetPermissions returns the permissions for a user. Special permissions add to
+// the base set rather than replacing it, and duplicates are dropped.
 func (c *Config) GetPermissions(username string) []string {
 	perms := []string{}
-	// Add base permissions
+	seen := make(map[string]bool)
 	for _, p := range c.BasePermission {
-		if p != "" {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		perms = append(perms, p)
+	}
+	if special, ok := c.SpecialPermission[username]; ok {
+		for _, p := range special {
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
 			perms = append(perms, p)
 		}
-	}
-	// Override with special permissions
-	if special, ok := c.SpecialPermission[username]; ok {
-		perms = append(perms, special...)
 	}
 	return perms
 }

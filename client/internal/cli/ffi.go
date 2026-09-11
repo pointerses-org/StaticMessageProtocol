@@ -37,6 +37,22 @@ func AssembleMessage(
     routeBytes := []byte(route)
     extBytes := []byte(extensions)
 
+    // smp_assemble_message accepts NULL with length 0 for an empty field
+    // (core/src/ffi.rs), but indexing an empty Go slice panics, so keep each
+    // pointer nil unless its slice actually has content.
+    var tailPtr *C.uint8_t
+    if len(tailBytes) > 0 {
+        tailPtr = (*C.uint8_t)(unsafe.Pointer(&tailBytes[0]))
+    }
+    var routePtr *C.uint8_t
+    if len(routeBytes) > 0 {
+        routePtr = (*C.uint8_t)(unsafe.Pointer(&routeBytes[0]))
+    }
+    var extPtr *C.uint8_t
+    if len(extBytes) > 0 {
+        extPtr = (*C.uint8_t)(unsafe.Pointer(&extBytes[0]))
+    }
+
     var refs *C.uint64_t
     var tsPtr *C.uint32_t
     ctxCount := C.size_t(0)
@@ -62,12 +78,12 @@ func AssembleMessage(
 
     var outLen C.size_t
     ptr := C.smp_assemble_message(
-        (*C.uint8_t)(unsafe.Pointer(&tailBytes[0])), C.size_t(len(tailBytes)),
+        tailPtr, C.size_t(len(tailBytes)),
         C.uint64_t(msgID),
         (*C.uint8_t)(unsafe.Pointer(version)), C.size_t(len("smp/0.1b")),
         (*C.uint8_t)(unsafe.Pointer(clientAddr)), C.size_t(len(localIP)),
-        (*C.uint8_t)(unsafe.Pointer(&routeBytes[0])), C.size_t(len(routeBytes)),
-        (*C.uint8_t)(unsafe.Pointer(&extBytes[0])), C.size_t(len(extBytes)),
+        routePtr, C.size_t(len(routeBytes)),
+        extPtr, C.size_t(len(extBytes)),
         ctxCount, refs, tsPtr,
         dataPtr, C.size_t(len(userData)),
         &outLen,

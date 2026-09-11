@@ -1,5 +1,5 @@
 # SMP Server Configuration
-# This file configures server behavior, permissions, and access control.
+# This file configures server behavior, command policy, and access control.
 
 # Server settings
 listen: 0.0.0.0:9932
@@ -9,20 +9,26 @@ cfm_max_mb: 100
 cfm_interval: 10
 verbose: false
 
-# Base permissions granted to all new users
-base-permission:
-  - read
-  - write
+# Command policy mode.
+#   "whitelist" -> a command is allowed only if some pattern matches it.
+#   "blacklist" -> a matching pattern denies the command, everything else passes.
+# Any other value, or a missing conf-mode, is treated as "blacklist".
+conf-mode: "whitelist"
 
-# Special permissions for specific users
+# Commands granted to every user. Patterns are globs matched against the CLI
+# command form of a route: smp pull, smp push, smp create, smp list,
+# smp watch-context, smp cfm upload, smp cfm download, smp token generate,
+# smp token list, smp token revoke.
+base-permission:
+  - smp *pull*
+  - smp *push*
+
+# Extra commands granted to specific users. "smp *" matches everything.
 special-permission:
   admin:
-    - read
-    - write
-    - delete
-    - manage
+    - smp *
 
-# Access control
+# Registration access control, independent of conf-mode.
 blacklist-enabled: false
 blacklist:
   - baduser1

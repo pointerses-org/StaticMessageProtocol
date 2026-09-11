@@ -3,6 +3,8 @@ package cli
 import (
     "flag"
     "fmt"
+    "strconv"
+    "strings"
 )
 
 // WatchContext queries the most recent message ID.
@@ -67,7 +69,16 @@ func WatchContext(args []string) error {
         return err
     }
 
-    fmt.Printf("Last message ID: %x\n", cfg.ContextID)
+    // The server answers "last_id=0x<msgID>" for the caller's own inbox. That is
+    // the source of truth -- cfg.ContextID is the last ID pushed *from here*,
+    // which is a different question.
+    resp := strings.TrimSpace(string(response))
+    if strings.HasPrefix(resp, "last_id=0x") {
+        if id, err := strconv.ParseUint(resp[len("last_id=0x"):], 16, 64); err == nil {
+            fmt.Printf("Last message ID: %x\n", id)
+            return nil
+        }
+    }
     DisplayResponse(response)
     return nil
 }

@@ -13,19 +13,94 @@ Lightweight message protocol with Rust core library, Go server, and Go CLI clien
 # 2. Start server
 ./target/smp-server.exe --listen 0.0.0.0:9932 --verbose
 
-# 3. Generate token
-./target/smp.exe token generate
+# 3. Bootstrap a token. `create` is what mints your token, but it refuses to run
+#    unless a token is already present. Seed a well-formed dummy: the token tail is
+#    the last 8 hex chars, so anything else blows the head past its 8-byte limit
+#    and the server answers -1003 ERR_HEAD_LIMIT.
+export SMP_TOKEN=smpt128-00000000000000000000000000000000
 
-# 4. Push message
-./target/smp.exe push myroute --data "Hello, SMP!"
+# 4. Register a user -> ok:<user>:token=<tok>:permissions=[...]
+#    The real token is saved to ~/.smp-token automatically.
+./target/smp.exe create smp@127.0.0.1 smp@alice
 
-# 5. Pull messages
-./target/smp.exe pull --limit 20 --route myroute
+# Drop the bootstrap value so later commands read ~/.smp-token instead of the
+# SMP_TOKEN env var, which takes precedence.
+unset SMP_TOKEN
 
-# 6. Large file hosting (CFM)
-./target/smp.exe cfm largefile.zip --expire 48h --public
-./target/smp.exe cfm 0x8000000000000001 -o output.zip
+# 5. Push a message. The payload is read from stdin; the message is addressed
+#    to smp@<username>. -u remembers the server for later commands.
+echo "Hello, SMP!" | ./target/smp.exe push -u smp@127.0.0.1 smp@alice
+
+# 6. Pull messages. Must be the same user the token is bound to.
+./target/smp.exe pull smp@127.0.0.1 smp@alice
+
+# 7. Large file hosting (CFM). Upload only -- there is no download subcommand.
+./target/smp.exe cfm push smp@127.0.0.1 largefile.zip
 ```
+
+> **Verified against a live server** in this working tree: `create` ->
+> `ok:alice:token=...` (saved to `~/.smp-token`), `push` -> `ok:<msgid>`, `pull`
+> returns the message, and `list`, `watch-context` and `cfm push` all return
+> normally -- with the server still alive after every one of them. Writing to, or
+> pulling from, an inbox the token is not bound to is rejected with `Error 1006`;
+> a token tail the server never issued is rejected with `Error 1007`; and a command
+> the config does not permit is rejected with `Error 6005`. So the bootstrap token
+> above works for `create` only and cannot be reused to read or write anyone else's
+> inbox. `watch-context` now prints the ID the server reports for the caller's own
+> inbox, and `_cfm_download` returns the uploaded bytes to the uploader while
+> rejecting every other known user.
+>
+> **Open:** the server discards the message `ext` block. The Rust FFI exposes no
+> accessor for it (`smp_parser_get_extensions` does not exist), so
+> `handleCFMUpload` reads `expire` / `public` out of the *file bytes* instead of out
+> of the ext block where `client/internal/cli/cfm.go:100` puts them. The client's
+> `public=false` literal is silently ignored and `public=true` is unreachable; fixing
+> it needs a new C FFI in `core` plus a rebuild of `smp_core.dll`.
+
+### Command Policy
+
+`conf-mode` with `base-permission` / `special-permission` decides which commands a
+user may run. Each pattern is a glob matched against the CLI command form of the
+route:
+
+| route | command |
+|-------|---------|
+| `_pull` | `smp pull` |
+| user inbox (`smp@alice`) | `smp push` |
+| `_create` | `smp create` |
+| `_list` | `smp list` |
+| `_watch` | `smp watch-context` |
+| `_cfm_upload` | `smp cfm upload` |
+| `_cfm_download` | `smp cfm download` |
+| `_token_generate` | `smp token generate` |
+| `_token_list` | `smp token list` |
+| `_token_revoke` | `smp token revoke` |
+
+| `conf-mode` | effect |
+|-------------|--------|
+| `"whitelist"` | allowed only when some pattern matches |
+| `"blacklist"` | allowed only when no pattern matches |
+| anything else, or missing | treated as `blacklist` |
+
+A user's effective set is `base-permission` plus `special-permission[<user>]`,
+de-duplicated in order, so `admin: [smp *]` grants everything. `_create` is exempt
+from both the command policy and the token check: it is the unauthenticated
+bootstrap, and gating it would deadlock the first user out of a token.
+
+Example (the shipped `server/config.yml`):
+
+```yaml
+conf-mode: "whitelist"
+base-permission:
+  - smp *pull*
+  - smp *push*
+special-permission:
+  admin:
+    - smp *
+```
+
+With this, non-admin users can push and pull only; `create` still works because it is
+exempt.
 
 ### Project Structure
 
@@ -141,15 +216,20 @@ go build -o smp-server.exe ./cmd/smp-server/
 
 | Command | Description |
 |---------|-------------|
-| `smp push <route>` | Push message, supports `--data`, `--file`, `--context`, `--id` |
-| `smp pull` | Pull messages, supports `--limit`, `--offset`, `--route`, `--output` |
-| `smp cfm <file>` | Upload file, supports `--expire`, `--public` |
-| `smp cfm <id>` | Download file, supports `-o` |
-| `smp token generate` | Generate token |
-| `smp token list` | List all tokens |
-| `smp token revoke <tail>` | Revoke token |
+| `smp push [-u] <smp@server_ip> <smp@username>` | Push message; payload is read from stdin. Flags: `--force`, `--http`, `--ssh`, `--tcp`, `--smp`, `--context <id>` |
+| `smp pull <smp@server_ip> <smp@username>` | Pull messages for a user. Flags: `-u`, `--force`, `--http`, `--ssh`, `--tcp`, `--smp` |
+| `smp create <smp@server_ip> <smp@username>` | Register a user; returns a token bound to that user, saved to `~/.smp-token`. Flags: `--force`, `--http`, `--ssh`, `--tcp`, `--smp` |
+| `smp list <smp@server_ip>` | List all users on the server. Flags: `--force`, `--http`, `--ssh`, `--tcp`, `--smp` |
+| `smp watch-context` | Query the most recent message ID. Flags: `--http`, `--ssh`, `--tcp`, `--smp` |
+| `smp cfm install [--force]` | Install the CFM DLL (`--force` bypasses the cache) |
+| `smp cfm push <smp@server_ip> <filename>` | Upload a file to CFM. Flags: `--force`, `--http`, `--ssh`, `--tcp`, `--smp` |
 
-Global parameters: `--server`, `--token`, `--timeout`, `--verbose`
+Servers are addressed `smp@<ip>`, users `smp@<username>`. Authentication is the
+`SMP_TOKEN` environment variable, falling back to `~/.smp-token`. There are no
+global `--server` / `--token` / `--timeout` flags.
+
+`_token_generate`, `_token_list` and `_token_revoke` exist as server routes
+(`server/internal/handler/message.go`) but have no client command.
 
 ### Running Tests
 
@@ -176,19 +256,84 @@ MIT
 # 2. 启动服务端
 ./target/smp-server.exe --listen 0.0.0.0:9932 --verbose
 
-# 3. 生成 Token
-./target/smp.exe token generate
+# 3. 引导 token。create 才是签发 token 的命令，但它要求已有 token 才会执行，
+#    所以先塞一个格式正确的假 token：tail 取 hex 部分最后 8 个字符，
+#    塞别的值会让 head 超出 8 字节上限，服务端回 -1003 ERR_HEAD_LIMIT。
+export SMP_TOKEN=smpt128-00000000000000000000000000000000
 
-# 4. 推送消息
-./target/smp.exe push myroute --data "Hello, SMP!"
+# 4. 注册用户 -> ok:<user>:token=<tok>:permissions=[...]
+#    真正的 token 会自动保存到 ~/.smp-token。
+./target/smp.exe create smp@127.0.0.1 smp@alice
 
-# 5. 拉取消息
-./target/smp.exe pull --limit 20 --route myroute
+# 去掉引导值，后面的命令才会读到 ~/.smp-token；SMP_TOKEN 环境变量优先级更高。
+unset SMP_TOKEN
 
-# 6. 大文件托管 (CFM)
-./target/smp.exe cfm largefile.zip --expire 48h --public
-./target/smp.exe cfm 0x8000000000000001 -o output.zip
+# 5. 推送消息。消息体从 stdin 读入，寻址到 smp@<username>。-u 记住服务端。
+echo "Hello, SMP!" | ./target/smp.exe push -u smp@127.0.0.1 smp@alice
+
+# 6. 拉取消息。必须是 token 绑定的那个用户。
+./target/smp.exe pull smp@127.0.0.1 smp@alice
+
+# 7. 大文件托管 (CFM)。只有上传，没有下载子命令。
+./target/smp.exe cfm push smp@127.0.0.1 largefile.zip
 ```
+
+> **已对着真服务端验证通过**（本工作树）：`create` -> `ok:alice:token=...`
+> （存进 `~/.smp-token`），`push` -> `ok:<msgid>`，`pull` 能取回消息，`list`、
+> `watch-context`、`cfm push` 都正常返回，且服务端在以上每一步之后都还活着。
+> 往 token 未绑定的信箱写、或从那里读，被 `Error 1006` 拒绝；服务端从未签发过的
+> token tail 被 `Error 1007` 拒绝；配置不允许的命令被 `Error 6005` 拒绝。
+> 所以上面那个引导 token 只对 `create` 有效，不能拿它读或写别人的信箱。
+> `watch-context` 现在打印的是服务端返回的、属于调用方自己信箱的 ID；
+> `_cfm_download` 会把上传的字节还给上传者，其他已知用户一律拒绝。
+>
+> **仍未修**：服务端会丢掉消息的 `ext` 块。Rust FFI 没有对应的取值函数
+> （`smp_parser_get_extensions` 不存在），所以 `handleCFMUpload` 是从**文件字节**
+> 里解析 `expire` / `public`，而不是从 `client/internal/cli/cfm.go:100` 放它们的
+> ext 块里解析。客户端那句 `public=false` 被静默忽略，`public=true` 根本到不了
+> 服务端；要修得先在 `core` 里加一个 C FFI 再重建 `smp_core.dll`。
+
+### 命令权限
+
+`conf-mode` 配合 `base-permission` / `special-permission` 决定用户能跑哪些命令。
+每个模式是按路由对应的 CLI 命令形式做 glob 匹配：
+
+| 路由 | 命令 |
+|------|------|
+| `_pull` | `smp pull` |
+| 用户信箱（`smp@alice`） | `smp push` |
+| `_create` | `smp create` |
+| `_list` | `smp list` |
+| `_watch` | `smp watch-context` |
+| `_cfm_upload` | `smp cfm upload` |
+| `_cfm_download` | `smp cfm download` |
+| `_token_generate` | `smp token generate` |
+| `_token_list` | `smp token list` |
+| `_token_revoke` | `smp token revoke` |
+
+| `conf-mode` | 效果 |
+|-------------|------|
+| `"whitelist"` | 有模式命中才放行 |
+| `"blacklist"` | 有模式命中就拒绝 |
+| 其他任何值 / 未配置 | 按 `blacklist` 处理 |
+
+某个用户的实际集合是 `base-permission` 加上 `special-permission[<user>]`，
+按顺序去重，所以 `admin: [smp *]` 等于全放行。`_create` 同时豁免命令策略和
+token 校验：它是无认证的引导入口，管它会让第一个用户拿不到 token。
+
+示例（即仓库里的 `server/config.yml`）：
+
+```yaml
+conf-mode: "whitelist"
+base-permission:
+  - smp *pull*
+  - smp *push*
+special-permission:
+  admin:
+    - smp *
+```
+
+这样普通用户只能 push 和 pull；`create` 仍然可用，因为它豁免了。
 
 ### 项目结构
 
@@ -304,15 +449,19 @@ go build -o smp-server.exe ./cmd/smp-server/
 
 | 命令 | 说明 |
 |------|------|
-| `smp push <route>` | 推送消息，支持 `--data`、`--file`、`--context`、`--id` |
-| `smp pull` | 拉取消息，支持 `--limit`、`--offset`、`--route`、`--output` |
-| `smp cfm <file>` | 上传文件，支持 `--expire`、`--public` |
-| `smp cfm <id>` | 下载文件，支持 `-o` |
-| `smp token generate` | 生成 Token |
-| `smp token list` | 列出所有 Token |
-| `smp token revoke <tail>` | 吊销 Token |
+| `smp push [-u] <smp@server_ip> <smp@username>` | 推送消息，消息体从 stdin 读入。可用 flag：`--force`、`--http`、`--ssh`、`--tcp`、`--smp`、`--context <id>` |
+| `smp pull <smp@server_ip> <smp@username>` | 拉取某用户的消息。可用 flag：`-u`、`--force`、`--http`、`--ssh`、`--tcp`、`--smp` |
+| `smp create <smp@server_ip> <smp@username>` | 注册用户，返回绑定该用户的 token 并保存到 `~/.smp-token`。可用 flag：`--force`、`--http`、`--ssh`、`--tcp`、`--smp` |
+| `smp list <smp@server_ip>` | 列出服务端所有用户。可用 flag：`--force`、`--http`、`--ssh`、`--tcp`、`--smp` |
+| `smp watch-context` | 查询最近一条消息 ID。可用 flag：`--http`、`--ssh`、`--tcp`、`--smp` |
+| `smp cfm install [--force]` | 安装 CFM DLL（`--force` 绕过缓存） |
+| `smp cfm push <smp@server_ip> <filename>` | 上传文件到 CFM。可用 flag：`--force`、`--http`、`--ssh`、`--tcp`、`--smp` |
 
-全局参数：`--server`、`--token`、`--timeout`、`--verbose`
+服务端地址写 `smp@<ip>`，用户写 `smp@<username>`。认证走 `SMP_TOKEN` 环境变量，
+读不到则回退 `~/.smp-token`。不存在 `--server` / `--token` / `--timeout` 这类全局 flag。
+
+`_token_generate`、`_token_list`、`_token_revoke` 只作为服务端路由存在
+（`server/internal/handler/message.go`），客户端没有对应命令。
 
 ### 运行测试
 

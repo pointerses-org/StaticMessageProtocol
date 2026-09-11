@@ -1,7 +1,7 @@
 // smp: SMP CLI client entry point.
 //
 // Usage:
-//   smp push [-flags] <smp@server_ip>
+//   smp push [-flags] <smp@server_ip> <smp@username>
 //   smp pull [-flags] <smp@server_ip> <smp@username>
 //   smp create [-flags] <smp@server_ip> <smp@username>
 //   smp list [-flags] <smp@server_ip>
@@ -61,8 +61,8 @@ func printUsage() {
 	fmt.Println(`SMP CLI - Static Message Protocol Client
 
 Usage:
-  smp push [-flags] <smp@server_ip>
-    Push a message to a server.
+  smp push [-flags] <smp@server_ip> <smp@username>
+    Push a message to a user. Payload is read from stdin.
     Flags: -u, --force, --http, --ssh, --tcp, --smp, --context <id>
 
   smp pull [-flags] <smp@server_ip> <smp@username>
@@ -93,11 +93,10 @@ Environment:
   SMP_TOKEN  Authentication token (smpt128-<32hex>)
 
 Examples:
-  smp push -u smp@192.168.1.100
+  smp push -u smp@192.168.1.100 smp@alice
   smp pull -u smp@192.168.1.100 smp@alice
   smp create smp@192.168.1.100 smp@bob
   smp list smp@192.168.1.100
   smp watch-context --http
-  smp cfm push smp@192.168.1.100 largefile.zip
-`)
+  smp cfm push smp@192.168.1.100 largefile.zip`)
 }
