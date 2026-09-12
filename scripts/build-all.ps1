@@ -16,8 +16,10 @@ param(
 )
 
 # ============================================================
-# Paths — hardcoded project root, avoid $MyInvocation issues
-$ROOT       = "D:\StaticMessageProtocol"
+# Paths — the root is resolved from this script's own location, so the repo
+# can live anywhere. Toolchain bin dirs come from PATH; override with
+# $env:CARGO_BIN / $env:GO_BIN if the tools are installed off-PATH.
+$ROOT       = Split-Path -Parent $PSScriptRoot
 $TARGET     = "$ROOT\target"
 
 $CORE_DIR   = "$ROOT\core"
@@ -25,8 +27,22 @@ $CFM_DIR    = "$ROOT\cfm"
 $SERVER_DIR = "$ROOT\server"
 $CLIENT_DIR = "$ROOT\client"
 
-$RUST_BIN = "D:\llvm-mingw-20260826-msvcrt-i686\bin"
-$GO_BIN   = "D:\go\bin"
+function BinDir($cmd, $overrideName) {
+    # The override var name is dynamic, and "$env:$name" is not valid
+    # PowerShell, so read it through the Env: drive.
+    $ov = Get-Item "Env:$overrideName" -ErrorAction SilentlyContinue
+    if ($ov -and (Test-Path $ov.Value)) { return $ov.Value }
+    $found = Get-Command $cmd -ErrorAction SilentlyContinue
+    if (-not $found -or -not $found.Source) {
+        Write-Host "  ERROR: '$cmd' not found on PATH and '$overrideName' is not set" -ForegroundColor Red
+        Write-Host "         install it, or set $overrideName to its bin directory" -ForegroundColor Red
+        exit 1
+    }
+    return Split-Path -Parent $found.Source
+}
+
+$RUST_BIN = BinDir 'cargo' 'CARGO_BIN'
+$GO_BIN   = BinDir 'go' 'GO_BIN'
 $CC       = "x86_64-w64-mingw32-gcc"
 $CXX      = "x86_64-w64-mingw32-g++"
 
@@ -53,14 +69,19 @@ $clientTmp  = "$CLIENT_DIR\tmp"
 # ============================================================
 # Utilities
 # ============================================================
-function Step($label, $cmd) {
+function Step($label, $dir, $cmd) {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  $label" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "> $cmd" -ForegroundColor DarkGray
+    Write-Host "> (in $dir) $cmd" -ForegroundColor DarkGray
+    # The working directory is pushed rather than embedded as an unquoted
+    # "cd ..." in the command string, so paths containing spaces survive.
+    Push-Location $dir
     & cmd /c $cmd 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
-    $LASTEXITCODE -eq 0
+    $rc = $LASTEXITCODE
+    Pop-Location
+    return $rc -eq 0
 }
 
 # ============================================================
@@ -112,7 +133,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  1/5 — Core (Rust)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 $env:GOTMPDIR = $serverTmp
-if (-not (Step "cargo build" "cd $CORE_DIR && cargo build $cargoProfile $cargoTarget")) {
+if (-not (Step "cargo build" $CORE_DIR "cargo build $cargoProfile $cargoTarget")) {
     Write-Host "FAILED" -ForegroundColor Red; exit 1
 }
 # Copy DLL to core/target/release/ for Go cgo linking
@@ -124,7 +145,7 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  2/5 — CFM (Rust)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-if (-not (Step "cargo build" "cd $CFM_DIR && cargo build $cargoProfile $cargoTarget")) {
+if (-not (Step "cargo build" $CFM_DIR "cargo build $cargoProfile $cargoTarget")) {
     Write-Host "FAILED" -ForegroundColor Red; exit 1
 }
 
@@ -134,7 +155,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  3/5 — Server (Go)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 $env:GOTMPDIR = $serverTmp
-if (-not (Step "go build" "cd $SERVER_DIR && go build -o smp-server.exe $goTags ./cmd/smp-server/")) {
+if (-not (Step "go build" $SERVER_DIR "go build -o smp-server.exe $goTags ./cmd/smp-server/")) {
     Write-Host "FAILED" -ForegroundColor Red; exit 1
 }
 
@@ -144,7 +165,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  4/5 — Client (Go)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 $env:GOTMPDIR = $clientTmp
-if (-not (Step "go build" "cd $CLIENT_DIR && go build -o smp.exe $goTags ./cmd/smp/")) {
+if (-not (Step "go build" $CLIENT_DIR "go build -o smp.exe $goTags ./cmd/smp/")) {
     Write-Host "FAILED" -ForegroundColor Red; exit 1
 }
 

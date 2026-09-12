@@ -16,14 +16,36 @@ func GenerateID() uint64 {
     return uint64(r.Int63())
 }
 
-// localAddr returns the local IP address.
+// localAddr returns this machine's own IPv4 address, used for the client
+// address field in the message SubHead. It walks the interface table rather
+// than dialing an external address, so it works on air-gapped hosts and does
+// not depend on how traffic to some fixed outside IP happens to be routed.
+// Falls back to loopback when no up, non-loopback IPv4 interface exists.
 func localAddr() string {
-    conn, err := net.Dial("udp", "8.8.8.8:80")
-    if err == nil {
-        defer conn.Close()
-        return conn.LocalAddr().String()
+    const fallback = "127.0.0.1"
+    ifaces, err := net.Interfaces()
+    if err != nil {
+        return fallback
     }
-    return "127.0.0.1"
+    for _, iface := range ifaces {
+        if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+            continue
+        }
+        addrs, err := iface.Addrs()
+        if err != nil {
+            continue
+        }
+        for _, a := range addrs {
+            ipNet, ok := a.(*net.IPNet)
+            if !ok || ipNet.IP.IsLoopback() {
+                continue
+            }
+            if ip := ipNet.IP.To4(); ip != nil {
+                return ip.String()
+            }
+        }
+    }
+    return fallback
 }
 
 // GetTokenTail extracts the token tail from env, token file, or config.
